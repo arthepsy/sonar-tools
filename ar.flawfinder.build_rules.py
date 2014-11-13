@@ -30,21 +30,6 @@ import sys, os, re, signal
 
 TEMPFILE = None
 PRIORITIES = ['INFO', 'MINOR', 'MAJOR', 'CRITICAL', 'BLOCKER']
-STD_REPLACES = {
-                'cuserid': 'Call to cuserid() is poorly defined, not portable and there is a risk of buffer overflow',
-                'fopen': 'Possible security flaw (race condition) when opening files',
-                'g_get_home_dir': 'Environment variables are untrustable input if they can be set by an attacker',
-                'getlogin': 'Avoid getlogin() for security-related purposes',
-                'getpass': 'This function is obsolete and not portable',
-                'getpw': 'This function is dangerous and it may overflow the provided buffer',
-                'gsignal': 'This function is considered obsolete on most systems and very non-portable',
-                'memalign': 'On some systems an attempt to free() results from memalign() may fail and be exploitable',
-                'mkstemp': 'Potential for temporary file vulnerability in some circumstances',
-                'usleep': 'This C routine is considered obsolete'
-               }
-STD_REPLACES['open'] = STD_REPLACES['fopen']
-STD_REPLACES['g_get_tmp_dir'] = STD_REPLACES['g_get_home_dir']
-STD_REPLACES['ssignal'] = STD_REPLACES['gsignal']
 
 def _err(*objs):
 	print(*objs, file=sys.stderr)
