@@ -70,18 +70,19 @@ class SonarCoverage():
 	
 	@staticmethod
 	def find_class_file(classpath, source_dirs, depth = 0):
+		extensions = ['.java', '.scala', '.groovy', '.py', '.as']
 		files_found = []
 		sclasspath = classpath.strip('.').split('.')
 		if len(sclasspath) == 1 and len(sclasspath[0].strip()) == 0:
 			raise ValueError('incorrect classpath "%s" ' % classpath);
 		for source_dir in source_dirs:
 			check_dir = os.path.join(source_dir, *sclasspath[:-1])
-			for ext in ['.java', '.scala', '.groovy', '.py', '.as']:
+			for ext in extensions:
 				file_path = os.path.join(check_dir, sclasspath[-1:][0] + ext)
 				if os.path.isfile(file_path):
 					files_found.append(file_path)
 			if len(files_found) == 0:
-				for ext in ['.java', '.scala', '.groovy', '.py', '.as']:
+				for ext in extensions:
 					file_path = check_dir + ext
 					if os.path.isfile(file_path):
 						files_found.append(file_path)
