@@ -72,7 +72,7 @@ class SonarCoverage():
 	def find_class_file(classpath, source_dirs, depth = 0):
 		files_found = []
 		sclasspath = classpath.strip('.').split('.')
-		if len(sclasspath) < 2:
+		if len(sclasspath) == 1 and len(sclasspath[0].strip()) == 0:
 			raise ValueError('incorrect classpath "%s" ' % classpath);
 		for source_dir in source_dirs:
 			check_dir = os.path.join(source_dir, *sclasspath[:-1])
@@ -87,11 +87,10 @@ class SonarCoverage():
 						files_found.append(file_path)
 		c = len(files_found)
 		if c == 0:
-			if len(sclasspath) > 3:
-				# check nested class in classpath
-				if depth == 0:
-					return SonarCoverage.find_class_file('.'.join(sclasspath[:-1]), source_dirs, depth + 1)
-		if c == 1:
+			# check nested class in classpath
+			if depth == 0 and len(sclasspath) > 1:
+				return SonarCoverage.find_class_file('.'.join(sclasspath[:-1]), source_dirs, depth + 1)
+		elif c == 1:
 			return files_found[0]
 		elif c > 1:
 			# print files_found
