@@ -82,28 +82,44 @@ class SonarCoverage():
 		return None
 	
 	@staticmethod
-	def find_class_file(classpath, source_dirs, depth = 0):
+	def find_class_file(classpath, source_dirs, map_file, depth = 0):
 		extensions = ['.java', '.scala', '.groovy', '.py', '.as']
 		files_found = []
 		sclasspath = classpath.strip('.').split('.')
 		if len(sclasspath) == 1 and len(sclasspath[0].strip()) == 0:
-			raise ValueError('incorrect classpath "%s" ' % classpath);
-		for source_dir in source_dirs:
-			check_dir = os.path.join(source_dir, *sclasspath[:-1])
-			for ext in extensions:
-				file_path = os.path.join(check_dir, sclasspath[-1:][0] + ext)
-				if os.path.isfile(file_path):
-					files_found.append(file_path)
-			if len(files_found) == 0:
-				for ext in extensions:
-					file_path = check_dir + ext
+			raise ValueError('incorrect classpath "%s" ' % classpath)
+		mapped_filepath = None
+		if map_file is not None and map_file.has_class(classpath):
+			mapped_filepath = map_file.get_class_filepath(classpath)
+		if mapped_filepath is not None and os.path.isabs(mapped_filepath):
+			files_found.append(mapped_filepath)
+		else:
+			for source_dir in source_dirs:
+				if mapped_filepath is not None:
+					file_path = os.path.join(source_dir, mapped_filepath)
 					if os.path.isfile(file_path):
 						files_found.append(file_path)
+				if len(files_found) == 0:
+					check_dir = os.path.join(source_dir, *sclasspath[:-1])
+					if mapped_filepath is not None:
+						file_path = os.path.join(check_dir, mapped_filepath)
+						if os.path.isfile(file_path):
+							files_found.append(file_path)
+					else:
+						for ext in extensions:
+							file_path = os.path.join(check_dir, sclasspath[-1:][0] + ext)
+							if os.path.isfile(file_path):
+								files_found.append(file_path)
+						if len(files_found) == 0:
+							for ext in extensions:
+								file_path = check_dir + ext
+								if os.path.isfile(file_path):
+									files_found.append(file_path)
 		c = len(files_found)
 		if c == 0:
 			# check nested class in classpath
 			if depth == 0 and len(sclasspath) > 1:
-				ff = SonarCoverage.find_class_file('.'.join(sclasspath[:-1]), source_dirs, depth + 1)
+				ff = SonarCoverage.find_class_file('.'.join(sclasspath[:-1]), source_dirs, map_file, depth + 1)
 				if ff is not None:
 					return ff
 			elif depth > 0:
@@ -122,7 +138,7 @@ class SonarCoverage():
 		itree = etree.parse(cfg.src_file)
 		otree = None
 		
-		parser = SonarCoverage.Parser(itree, cfg.root_dir, cfg.source_dirs, cfg.full_path)
+		parser = SonarCoverage.Parser(itree, cfg.root_dir, cfg.source_dirs, cfg.full_path, cfg.map_file)
 		parser.verbose = cfg.verbose;
 		
 		cov_type = self.get_cov_type(cfg.src_format)
@@ -277,15 +293,39 @@ class SonarCoverage():
 				if bhits > 0:
 					oline.set('coveredBranches', str(bhits))
 	
+	class MapFile(object):
+		def __init__(self, map_file):
+			self.class_map = {}
+			if map_file is not None:
+				self._load(map_file)
+		
+		def _load(self, map_file):
+			with open(map_file, 'r') as f:
+				for rline in f:
+					line = rline.strip().split(':')
+					if len(line) != 2: continue
+					if line[0].startswith('#'): continue
+					class_path = line[0].strip()
+					class_filepath = line[1].strip()
+					if not len(class_filepath) > 0: continue
+					self.class_map[class_path] = class_filepath
+		
+		def has_class(self, class_path):
+			return class_path in self.class_map
+		
+		def get_class_filepath(self, class_path):
+			return self.class_map[class_path]
+	
 	class Parser():
-		def __init__(self, itree, root_dir = None, source_dirs = [], set_full_path = False):
+		def __init__(self, itree, root_dir = None, source_dirs = [], set_full_path = False, map_file = None):
 			if itree is None or not isinstance(itree, etree._ElementTree):
 				raise TypeError('tree not valid xml tree', itree)
 			self.itree = itree
 			self.root_dir = Utils.strip_dir(root_dir or '')
 			self.source_dirs = Utils.parse_dirs(root_dir, source_dirs, reduced=False, existing=True)
-			self.verbose = False
 			self.set_full_path = set_full_path
+			self.map_file = map_file
+			self.verbose = False
 		
 		def parse(self, src_format, dst_format):
 			if dst_format == Config.FORMAT_SONAR:
@@ -376,7 +416,7 @@ class SonarCoverage():
 					else:
 						if self.verbose:
 							print '[junit] searching class file for "%s"' % test_classname
-						test_filepath = SonarCoverage.find_class_file(test_classname, self.source_dirs)
+						test_filepath = SonarCoverage.find_class_file(test_classname, self.source_dirs, self.map_file)
 						test_filepath = self.strip_root(test_filepath)
 						if self.verbose:
 							print '[junit] found corresponding file "%s"' % test_filepath
@@ -653,6 +693,7 @@ class Config(object):
 		self.full_path = False
 		self.src_file = None
 		self.dst_file = None
+		self.map_file = None
 		self.src_format = None
 		self.dst_format = None
 
@@ -676,13 +717,14 @@ class CmdLine():
 	@click.option('--root-dir', '-r', type=_type_dir)
 	@click.option('source_dirs', '--source-dir', '-s', multiple=True, type=_type_dir, required=True)
 	@click.option('--full-path', '-f', help='Output full paths', default=False, is_flag=True)
+	@click.option('--map-file', '-m', help='Custom map file', type=_type_rofile)
 	@click.option('--input-format', '-i', metavar='[%s]' % '|'.join(Config.SRC_FORMATS), help='Input format (guess by default)', type=click.Choice(['guess']  + Config.SRC_FORMATS), default='guess', required=True)
 	@click.option('--output-format', '-o', metavar='[%s]' % '|'.join(Config.DST_FORMATS), help='Output format (default: %s)' % Config.DST_DEFAULT_FORMAT, type=click.Choice(Config.DST_FORMATS), default=Config.DST_DEFAULT_FORMAT, required=True)
 	@click.argument('src', metavar='<input>', type=_type_rofile)
 	@click.argument('dst', metavar='<output>', type=_type_rwfile)
 	#@pass_config
 	@click.pass_context
-	def convert(ctx, root_dir, source_dirs, src, dst, full_path, input_format, output_format):
+	def convert(ctx, root_dir, source_dirs, src, dst, map_file, full_path, input_format, output_format):
 		"""Convert coverage/unit report to other format"""
 		if input_format == 'guess':
 			input_format = SonarCoverage.guess_format(src)
@@ -694,6 +736,7 @@ class CmdLine():
 		cfg.full_path = full_path
 		cfg.src_file = src
 		cfg.dst_file = dst
+		cfg.map_file = SonarCoverage.MapFile(map_file)
 		cfg.src_format = input_format
 		cfg.dst_format = output_format
 		sc = SonarCoverage()
