@@ -228,7 +228,6 @@ class SonarCoverage():
 			raise TypeError('tests not valid', tests)
 		oroot = otree.getroot()
 		for fp, test_cases in tests.iteritems():
-			print "[xxx] ", fp, test_cases
 			if test_cases is None or len(test_cases) == 0: continue
 			ofile = etree.SubElement(oroot, 'file')
 			ofile.set('path', fp)
