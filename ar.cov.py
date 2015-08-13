@@ -39,9 +39,9 @@ class SonarCoverage():
 		return etree.ElementTree(oroot)
 	
 	def get_cov_type(self, cov_format):
-		if cov_format in ['junit', 'sgc-unit']:
+		if cov_format in [Config.FORMAT_JUNIT, Config.FORMAT_SGC_UNIT]:
 			return 'tests'
-		elif cov_format in ['cobertura', 'jacoco']:
+		elif cov_format in [Config.FORMAT_COBERTURA, Config.FORMAT_JACOCO, Config.FORMAT_SGC_COV]:
 			return 'coverage'
 		else:
 			raise TypeError('coverage format not valid', cov_format)
@@ -52,20 +52,33 @@ class SonarCoverage():
 			return None
 		itree = etree.parse(src)
 		iroot = itree.getroot()
+		dtd = itree.docinfo.system_url or ''
+		
 		if iroot.tag == 'testsuites' or iroot.tag == 'testsuite':
-			return 'junit'
-		elif itree.docinfo.root_name == 'coverage':
-			return 'cobertura'
-		elif itree.docinfo.root_name == 'report':
-			return 'jacoco'
-		elif iroot.tag == 'coverage':
-			version = Utils.parse_int(iroot.get('version') or 0)
-			if version == SonarCoverage.VERSION:
-				return 'sgc-cov'
+			return Config.FORMAT_JUNIT
+		elif iroot.tag == 'report':
+			return Config.FORMAT_JACOCO
 		elif iroot.tag == 'unitTest':
 			version = Utils.parse_int(iroot.get('version') or 0)
 			if version == SonarCoverage.VERSION:
-				return 'sgc-unit'
+				return Config.FORMAT_SGC_UNIT
+		elif iroot.tag == 'coverage':
+			if dtd is not None:
+				if 'cobertura' in dtd:
+					return Config.FORMAT_COBERTURA
+				m = re.match(r'^.*/coverage-([0-9]+)\.dtd$', dtd)
+				if m is not None:
+					version = Utils.parse_num(m.group(1))
+					if version > 3:
+						return Config.FORMAT_COBERTURA
+			cobertura_attrs = ['line-rate', 'branch-rate', 'lines-covered', 'lines-valid', 'branches-covered', 'branches-valid', 'complexity', 'timestamp']
+			for attr in cobertura_attrs:
+				if len((iroot.get(attr) or '').strip()) > 0:
+					return Config.FORMAT_COBERTURA
+			version = Utils.parse_int(iroot.get('version') or 0)
+			if version == SonarCoverage.VERSION:
+				return Config.FORMAT_SGC_COV
+			return Config.FORMAT_COBERTURA
 		return None
 	
 	@staticmethod
@@ -125,14 +138,51 @@ class SonarCoverage():
 		else:
 			raise Exception('could not convert %s -> %s.' % (cfg.src_format, cfg.dst_format))
 	
+	@staticmethod
+	def merge_sgc_cov_line(lhits, bcount, bhits, old_cov_line):
+		olhits = old_cov_line['lhits'] if 'lhits' in old_cov_line else 0
+		obcount = old_cov_line['bcount'] if 'bcount' in old_cov_line else 0
+		obhits = old_cov_line['bhits'] if 'bhits' in old_cov_line else 0
+		if bcount == obcount:
+			lhits = 1 if olhits > 0 or lhits > 0 else 0 
+		elif bcount > obcount:
+			lhits = 1 if lhits > 0 else 0
+		elif bcount < obcount:
+			lhits = 1 if olhits > 0 else 0
+		bcount = max(bcount, obcount)
+		bhits = max(bhits, obhits)
+		return (lhits, bcount, bhits)
+	
 	def merge(self, cfg):
 		if cfg is None or not isinstance(cfg, Config):
 			raise TypeError('config not valid', cfg)
 		otree = None
-		
 		cov_type = self.get_cov_type(cfg.src_format)
 		if cov_type == 'coverage':
-			raise Exception('not implemented')
+			coverage_merged = {}
+			for src_file in cfg.src_file:
+				itree = etree.parse(src_file)
+				parser = SonarCoverage.Parser(itree, cfg.root_dir, cfg.source_dirs)
+				parser.verbose = cfg.verbose;
+				coverage = parser.parse(cfg.src_format, cfg.dst_format)
+				if coverage is None:
+					raise Exception('could not parse "%s"' % src_file)
+				for fp, lines in coverage.iteritems():
+					if fp is None or len(fp.strip()) == 0: continue 
+					if lines is None or len(lines) == 0: continue
+					if not fp in coverage_merged:
+						coverage_merged[fp] = {}
+					for line_nr, cov_data in lines.iteritems():
+						if cov_data is None: continue
+						if not line_nr > 0: continue
+						lhits = cov_data['lhits'] if 'lhits' in cov_data else 0
+						bcount = cov_data['bcount'] if 'bcount' in cov_data else 0
+						bhits = cov_data['bhits'] if 'bhits' in cov_data else 0
+						if line_nr in coverage_merged[fp]:
+							(lhits, bcout, bhits) =  SonarCoverage.merge_sgc_cov_line(lhits, bcount, bhits, coverage_merged[fp][line_nr])
+						coverage_merged[fp][line_nr] = {'lhits': lhits, 'bcount':bcount, 'bhits':bhits}
+			otree = self.create_tree(cov_type)
+			self.fill_cov_tree(otree, coverage_merged)
 		else:
 			tests_merged = {}
 			for src_file in cfg.src_file:
@@ -178,6 +228,7 @@ class SonarCoverage():
 			raise TypeError('tests not valid', tests)
 		oroot = otree.getroot()
 		for fp, test_cases in tests.iteritems():
+			print "[xxx] ", fp, test_cases
 			if test_cases is None or len(test_cases) == 0: continue
 			ofile = etree.SubElement(oroot, 'file')
 			ofile.set('path', fp)
@@ -234,15 +285,17 @@ class SonarCoverage():
 			self.set_full_path = set_full_path
 		
 		def parse(self, src_format, dst_format):
-			if dst_format == 'sonar':
-				if src_format == 'cobertura':
+			if dst_format == Config.FORMAT_SONAR:
+				if src_format == Config.FORMAT_COBERTURA:
 					return self.from_cobertura()
-				elif src_format == 'junit':
+				elif src_format == Config.FORMAT_JUNIT:
 					return self.from_junit()
-				elif src_format == 'jacoco':
+				elif src_format == Config.FORMAT_JACOCO:
 					return self.from_jacoco()
-				elif src_format == 'sgc-unit':
+				elif src_format == Config.FORMAT_SGC_UNIT:
 					return self.from_sgc_unit()
+				elif src_format == Config.FORMAT_SGC_COV:
+					return self.from_sgc_cov()
 			return None
 		
 		def strip_root(self, fn):
@@ -250,6 +303,25 @@ class SonarCoverage():
 			if spl > 0:
 				fn = fn[spl + 1:]
 			return fn
+		
+		def from_sgc_cov(self):
+			coverage = {}
+			xroot = self.itree.getroot()
+			for xfile in xroot.iter('file'):
+				fp = xfile.get('path')
+				if fp not in coverage:
+					coverage[fp] = {}
+				for xline in xfile.iter('lineToCover'):
+					line_nr = Utils.parse_int(xline.get('lineNumber') or '0')
+					if not line_nr > 0: continue
+					covered = (xline.get('covered') or '').lower() == 'true'
+					bcount = Utils.parse_int(xline.get('branchesToCover') or '0')
+					bhits = Utils.parse_int(xline.get('coveredBranches') or '0')
+					lhits = 1 if covered else 0
+					if line_nr in coverage[fp]:
+						(lhits, bcout, bhits) =  SonarCoverage.merge_sgc_cov_line(lhits, bcount, bhits, coverage[fp][line_nr])
+					coverage[fp][line_nr] = {'lhits': lhits, 'bcount':bcount, 'bhits':bhits}
+			return coverage
 		
 		def from_sgc_unit(self):
 			tests = {}
@@ -560,9 +632,16 @@ class Cobertura():
 					iclass.set('filename', class_fp_new)
 
 class Config(object):
-	SRC_FORMATS = ['cobertura', 'jacoco', 'junit']
-	DST_FORMATS = ['sonar']
-	DST_DEFAULT_FORMAT = 'sonar'
+	FORMAT_COBERTURA = 'cobertura'
+	FORMAT_JACOCO = 'jacoco'
+	FORMAT_JUNIT = 'junit'
+	FORMAT_SONAR = 'sonar'
+	FORMAT_SGC_UNIT = 'sgc-unit'
+	FORMAT_SGC_COV  = 'sgc-cov'
+	
+	SRC_FORMATS = [FORMAT_COBERTURA, FORMAT_JACOCO, FORMAT_JUNIT]
+	DST_FORMATS = [FORMAT_SONAR]
+	DST_DEFAULT_FORMAT = FORMAT_SONAR
 	
 	def __init__(self, verbose=False):
 		self.verbose = verbose
@@ -649,7 +728,7 @@ class CmdLine():
 		if input_format:
 			if input_format in Config.SRC_FORMATS:
 				valid_format = True
-			if input_format in ['sgc-unit', 'sgc-cov']:
+			if input_format in [Config.FORMAT_SGC_UNIT, Config.FORMAT_SGC_COV]:
 				valid_format = True
 		if not valid_format:
 			raise click.UsageError('Cannot guess input format, please specify.')
