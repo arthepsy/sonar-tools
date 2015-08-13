@@ -103,10 +103,14 @@ class SonarCoverage():
 		if c == 0:
 			# check nested class in classpath
 			if depth == 0 and len(sclasspath) > 1:
-				return SonarCoverage.find_class_file('.'.join(sclasspath[:-1]), source_dirs, depth + 1)
+				ff = SonarCoverage.find_class_file('.'.join(sclasspath[:-1]), source_dirs, depth + 1)
+				if ff is not None:
+					return ff
+			elif depth > 0:
+				return None
 		elif c == 1:
 			return files_found[0]
-		elif c > 1:
+		if c > 1:
 			# print files_found
 			raise NotImplementedError('found multiple source files: %s' % (files_found))
 		else:
